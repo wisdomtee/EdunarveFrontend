@@ -1,0 +1,58 @@
+body{
+font-family: Arial;
+margin:0;
+background:#f4f4f4;
+}
+
+.login-container{
+width:300px;
+margin:100px auto;
+padding:20px;
+background:white;
+text-align:center;
+}
+
+input{
+width:90%;
+padding:10px;
+margin:10px;
+}
+
+button{
+padding:10px 20px;
+background:#3498db;
+color:white;
+border:none;
+}
+
+.sidebar{
+width:200px;
+height:100vh;
+background:#2c3e50;
+color:white;
+position:fixed;
+}
+
+.sidebar a{
+display:block;
+color:white;
+padding:10px;
+text-decoration:none;
+}
+
+.content{
+margin-left:220px;
+padding:20px;
+}
+
+.cards{
+display:flex;
+gap:20px;
+}
+
+.card{
+background:white;
+padding:20px;
+width:150px;
+box-shadow:0 0 5px gray;
+}
