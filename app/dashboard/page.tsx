@@ -1,252 +1,1384 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { API_BASE_URL, getAuthHeaders } from "@/lib/api"
 import {
+  ResponsiveContainer,
   BarChart,
   Bar,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
-  Tooltip,
-  ResponsiveContainer,
   CartesianGrid,
+  Tooltip,
+  Legend,
 } from "recharts"
+import { API_BASE_URL, getAuthHeaders, getUser } from "@/lib/auth"
+import RoleGuard from "@/app/components/RoleGuard"
 
-type Stats = {
-  totalStudents: number
-  presentToday: number
-  absentToday: number
-  lateToday: number
+type UserRole = "SUPER_ADMIN" | "SCHOOL_ADMIN" | "TEACHER" | "PARENT"
+
+type AuthUser = {
+  id: number
+  name?: string
+  email: string
+  role: UserRole
+  schoolId?: number | null
 }
 
-type WeekData = {
+type DashboardStats = {
+  schools: number
+  students: number
+  teachers: number
+  classes: number
+  results: number
+  attendance: number
+}
+
+type ChildSummary = {
+  studentName?: string
+  className?: string
+  averageScore?: number | null
+  attendanceRate?: number | null
+}
+
+type AttendanceTrendItem = {
   date: string
   present: number
+  absent: number
+  late: number
 }
 
-type Student = {
-  id: number
+type PerformanceSubjectItem = {
+  subject: string
+  averageScore: number
+  count: number
+}
+
+type ClassDistributionItem = {
   name: string
-  studentId: string
-  school?: {
-    name: string
-  }
-  classItem?: {
-    name: string
+  value: number
+}
+
+type PerformanceTrendItem = {
+  month: string
+  averageScore: number
+}
+
+type DashboardFilters = {
+  selectedClass: string
+  selectedTerm: string
+  startDate: string
+  endDate: string
+  availableClasses: string[]
+}
+
+type AnalyticsResponse = {
+  insights: string[]
+  filters: DashboardFilters
+  summary: DashboardStats
+  charts: {
+    attendanceTrend: AttendanceTrendItem[]
+    performanceBySubject: PerformanceSubjectItem[]
+    classDistribution: ClassDistributionItem[]
+    performanceTrend: PerformanceTrendItem[]
   }
 }
 
-export default function DashboardPage() {
+type TeacherSummaryResponse = {
+  teacher: {
+    id: number
+    name: string
+    email: string
+    subject?: string | null
+  }
+  stats: {
+    students: number
+    classes: number
+    results: number
+    attendance: number
+  }
+  classes: Array<{
+    id: number
+    name: string
+  }>
+}
+
+type TeacherDashboardChartsResponse = {
+  charts: {
+    attendanceTrend: AttendanceTrendItem[]
+    performanceBySubject: PerformanceSubjectItem[]
+    classDistribution: ClassDistributionItem[]
+    performanceTrend: PerformanceTrendItem[]
+  }
+}
+
+type QuickActionItem = {
+  title: string
+  description: string
+  href: string
+}
+
+const CHART_COLORS = [
+  "#2563eb",
+  "#16a34a",
+  "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#06b6d4",
+]
+
+export default function DashboardHomePage() {
   const router = useRouter()
-
-  const [stats, setStats] = useState<Stats | null>(null)
-  const [weekData, setWeekData] = useState<WeekData[]>([])
-  const [recentStudents, setRecentStudents] = useState<Student[]>([])
+  const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [stats, setStats] = useState<DashboardStats>({
+    schools: 0,
+    students: 0,
+    teachers: 0,
+    classes: 0,
+    results: 0,
+    attendance: 0,
+  })
+  const [childSummary, setChildSummary] = useState<ChildSummary>({})
 
-  const fetchDashboardData = async () => {
+  const [attendanceTrend, setAttendanceTrend] = useState<AttendanceTrendItem[]>(
+    []
+  )
+  const [performanceBySubject, setPerformanceBySubject] = useState<
+    PerformanceSubjectItem[]
+  >([])
+  const [classDistribution, setClassDistribution] = useState<
+    ClassDistributionItem[]
+  >([])
+  const [performanceTrend, setPerformanceTrend] = useState<
+    PerformanceTrendItem[]
+  >([])
+  const [insights, setInsights] = useState<string[]>([])
+
+  const [selectedClass, setSelectedClass] = useState("")
+  const [selectedTerm, setSelectedTerm] = useState("")
+  const [startDate, setStartDate] = useState("")
+  const [endDate, setEndDate] = useState("")
+  const [availableClasses, setAvailableClasses] = useState<string[]>([])
+  const [teacherDebug, setTeacherDebug] = useState<any>(null)
+
+  useEffect(() => {
+    const storedUser = getUser()
+
+    if (!storedUser) {
+      router.replace("/login")
+      return
+    }
+
+    setUser(storedUser)
+  }, [router])
+
+  useEffect(() => {
+    if (!user) return
+    loadDashboard(user)
+  }, [user, selectedClass, selectedTerm, startDate, endDate])
+
+  const fetchTeacherDashboardCharts = async () => {
+    const candidateUrls = [
+      `${API_BASE_URL}/teacher/dashboard`,
+      `${API_BASE_URL}/teacher/teacher/dashboard`,
+    ]
+
+    for (const url of candidateUrls) {
+      try {
+        const res = await fetch(url, {
+          headers: getAuthHeaders(),
+        })
+
+        if (!res.ok) continue
+
+        const data: TeacherDashboardChartsResponse = await res.json()
+
+        return data
+      } catch {
+        continue
+      }
+    }
+
+    return null
+  }
+
+  const loadDashboard = async (currentUser: AuthUser) => {
     try {
       setLoading(true)
+      setError("")
 
-      const token = localStorage.getItem("token")
+      const params = new URLSearchParams()
 
-      if (!token) {
-        router.push("/login")
-        return
-      }
+      if (selectedClass) params.set("class", selectedClass)
+      if (selectedTerm) params.set("term", selectedTerm)
+      if (startDate) params.set("startDate", startDate)
+      if (endDate) params.set("endDate", endDate)
 
-      const headers = getAuthHeaders()
-
-      const [statsRes, weekRes, studentsRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/dashboard/stats`, {
-          headers,
-        }),
-        fetch(`${API_BASE_URL}/dashboard/attendance-week`, {
-          headers,
-        }),
-        fetch(`${API_BASE_URL}/students`, {
-          headers,
-        }),
-      ])
-
-      if (
-        statsRes.status === 401 ||
-        weekRes.status === 401 ||
-        studentsRes.status === 401
-      ) {
-        localStorage.removeItem("token")
-        localStorage.removeItem("user")
-        router.push("/login")
-        return
-      }
-
-      if (!statsRes.ok) {
-        const text = await statsRes.text()
-        throw new Error(text || "Failed to fetch stats")
-      }
-
-      if (!weekRes.ok) {
-        const text = await weekRes.text()
-        throw new Error(text || "Failed to fetch weekly attendance")
-      }
-
-      const statsData = await statsRes.json()
-      const weekDataRes = await weekRes.json()
-
-      let studentsData: any = { students: [] }
-
-      if (studentsRes.ok) {
-        studentsData = await studentsRes.json()
-      } else {
-        const text = await studentsRes.text()
-        console.warn("Students endpoint failed:", text)
-      }
-
-      setStats(statsData)
-      setWeekData(Array.isArray(weekDataRes) ? weekDataRes : [])
-      setRecentStudents(
-        Array.isArray(studentsData)
-          ? studentsData.slice(0, 5)
-          : studentsData.students || []
+      const analyticsRes = await fetch(
+        `${API_BASE_URL}/analytics/dashboard?${params.toString()}`,
+        {
+          headers: getAuthHeaders(),
+        }
       )
-    } catch (error) {
-      console.error("DASHBOARD ERROR:", error)
-      alert("Dashboard failed to load")
+
+      if (!analyticsRes.ok) {
+        throw new Error("Failed to load analytics dashboard")
+      }
+
+      const analyticsData: AnalyticsResponse = await analyticsRes.json()
+
+      setStats(
+        analyticsData.summary || {
+          schools: 0,
+          students: 0,
+          teachers: 0,
+          classes: 0,
+          results: 0,
+          attendance: 0,
+        }
+      )
+
+      setAvailableClasses(analyticsData.filters?.availableClasses || [])
+      setAttendanceTrend(analyticsData.charts?.attendanceTrend || [])
+      setPerformanceBySubject(analyticsData.charts?.performanceBySubject || [])
+      setClassDistribution(analyticsData.charts?.classDistribution || [])
+      setPerformanceTrend(analyticsData.charts?.performanceTrend || [])
+      setInsights(analyticsData.insights || [])
+
+      if (currentUser.role === "TEACHER") {
+        try {
+          const teacherSummaryRes = await fetch(
+            `${API_BASE_URL}/teachers/me/summary`,
+            {
+              headers: getAuthHeaders(),
+            }
+          )
+
+          if (teacherSummaryRes.ok) {
+            const teacherSummaryData: TeacherSummaryResponse =
+              await teacherSummaryRes.json()
+
+            setStats((prev) => ({
+              ...prev,
+              students: teacherSummaryData.stats?.students || 0,
+              classes: teacherSummaryData.stats?.classes || 0,
+              results: teacherSummaryData.stats?.results || 0,
+              attendance: teacherSummaryData.stats?.attendance || 0,
+            }))
+
+            setAvailableClasses(
+              Array.isArray(teacherSummaryData.classes)
+                ? teacherSummaryData.classes.map((item) => item.name)
+                : []
+            )
+            setTeacherDebug(teacherSummaryData)
+          }
+        } catch (teacherError) {
+          console.error("Failed to load teacher summary:", teacherError)
+        }
+
+        try {
+          const teacherChartsData = await fetchTeacherDashboardCharts()
+
+          if (teacherChartsData?.charts) {
+            setAttendanceTrend(teacherChartsData.charts.attendanceTrend || [])
+            setPerformanceBySubject(
+              teacherChartsData.charts.performanceBySubject || []
+            )
+            setClassDistribution(teacherChartsData.charts.classDistribution || [])
+            setPerformanceTrend(teacherChartsData.charts.performanceTrend || [])
+          }
+        } catch (teacherChartError) {
+          console.error(
+            "Failed to load teacher dashboard charts:",
+            teacherChartError
+          )
+        }
+      }
+
+      if (currentUser.role === "PARENT") {
+        const resultsRes = await fetch(`${API_BASE_URL}/results`, {
+          headers: getAuthHeaders(),
+        })
+
+        const resultsData = resultsRes.ok ? await resultsRes.json() : []
+        const results = Array.isArray(resultsData) ? resultsData : []
+
+        let attendance: any[] = []
+
+        try {
+          const attendanceRes = await fetch(`${API_BASE_URL}/attendance`, {
+            headers: getAuthHeaders(),
+          })
+
+          if (attendanceRes.ok) {
+            const attendanceData = await attendanceRes.json()
+            attendance = Array.isArray(attendanceData?.attendance)
+              ? attendanceData.attendance
+              : []
+          }
+        } catch {
+          attendance = []
+        }
+
+        const firstStudent = results[0]?.student || attendance[0]?.student
+
+        const averageScore =
+          results.length > 0
+            ? Math.round(
+                results.reduce(
+                  (sum: number, item: any) => sum + Number(item.score || 0),
+                  0
+                ) / results.length
+              )
+            : null
+
+        const presentCount = attendance.filter(
+          (item: any) => String(item.status).toUpperCase() === "PRESENT"
+        ).length
+
+        const attendanceRate =
+          attendance.length > 0
+            ? Math.round((presentCount / attendance.length) * 100)
+            : null
+
+        setChildSummary({
+          studentName: firstStudent?.name,
+          className:
+            firstStudent?.class?.name ||
+            firstStudent?.className ||
+            firstStudent?.class?.title ||
+            "",
+          averageScore,
+          attendanceRate,
+        })
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to load dashboard")
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => {
-    fetchDashboardData()
-  }, [])
+  const cards = useMemo(() => {
+    if (!user) return []
+
+    if (user.role === "SUPER_ADMIN") {
+      return [
+        {
+          title: "Total Schools",
+          value: stats.schools,
+          href: "/dashboard/schools",
+        },
+        {
+          title: "Platform Students",
+          value: stats.students,
+          href: "/dashboard/schools",
+        },
+        {
+          title: "Platform Teachers",
+          value: stats.teachers,
+          href: "/dashboard/schools",
+        },
+        {
+          title: "Platform Classes",
+          value: stats.classes,
+          href: "/dashboard/schools",
+        },
+      ]
+    }
+
+    if (user.role === "SCHOOL_ADMIN") {
+      return [
+        {
+          title: "Students",
+          value: stats.students,
+          href: "/dashboard/students",
+        },
+        {
+          title: "Teachers",
+          value: stats.teachers,
+          href: "/dashboard/teachers",
+        },
+        {
+          title: "Classes",
+          value: stats.classes,
+          href: "/dashboard/classes",
+        },
+        {
+          title: "Results",
+          value: stats.results,
+          href: "/dashboard/results",
+        },
+      ]
+    }
+
+    if (user.role === "TEACHER") {
+      {teacherDebug && (
+  <div className="rounded-2xl border bg-yellow-50 p-5 shadow-sm">
+    <h3 className="text-lg font-bold text-gray-900">
+      🔍 Teacher Debug Panel
+    </h3>
+
+    <div className="mt-3 text-sm space-y-2 text-gray-700">
+      <p>
+        <strong>Name:</strong> {teacherDebug.teacher?.name}
+      </p>
+
+      <p>
+        <strong>Classes Assigned:</strong>{" "}
+        {teacherDebug.classes?.length || 0}
+      </p>
+
+      <p>
+        <strong>Students:</strong>{" "}
+        {teacherDebug.stats?.students || 0}
+      </p>
+
+      <p>
+        <strong>Results:</strong>{" "}
+        {teacherDebug.stats?.results || 0}
+      </p>
+
+      <p>
+        <strong>Attendance:</strong>{" "}
+        {teacherDebug.stats?.attendance || 0}
+      </p>
+
+      <div>
+        <strong>Class List:</strong>
+        <ul className="list-disc ml-5 mt-2">
+          {teacherDebug.classes?.map((c: any) => (
+            <li key={c.id}>{c.name}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  </div>
+)}
+      return [
+        {
+          title: "Students",
+          value: stats.students,
+          href: "/dashboard/students",
+        },
+        {
+          title: "Classes",
+          value: stats.classes,
+          href: "/dashboard/classes",
+        },
+        {
+          title: "Results",
+          value: stats.results,
+          href: "/dashboard/results",
+        },
+        {
+          title: "Attendance",
+          value: stats.attendance,
+          href: "/dashboard/attendance",
+        },
+      ]
+    }
+
+    return [
+      {
+        title: "My Child",
+        value: stats.students,
+        href: "/dashboard/results",
+      },
+      {
+        title: "Results",
+        value: stats.results,
+        href: "/dashboard/results",
+      },
+      {
+        title: "Attendance",
+        value: stats.attendance,
+        href: "/dashboard/attendance",
+      },
+      {
+        title: "Average Score",
+        value:
+          childSummary.averageScore !== null &&
+          childSummary.averageScore !== undefined
+            ? `${childSummary.averageScore}%`
+            : "-",
+        href: "/dashboard/results",
+      },
+    ]
+  }, [user, stats, childSummary])
+
+  const schoolAdminQuickActions: QuickActionItem[] = [
+    {
+      title: "Manage Students",
+      description: "Create, update and review student records quickly.",
+      href: "/dashboard/students",
+    },
+    {
+      title: "Manage Teachers",
+      description: "View staff, edit teacher details and keep records organized.",
+      href: "/dashboard/teachers",
+    },
+    {
+      title: "Manage Classes",
+      description: "Set up class groups, assign students and organize structure.",
+      href: "/dashboard/classes",
+    },
+    {
+      title: "Upload Results",
+      description: "Review or upload term performance records for students.",
+      href: "/dashboard/results",
+    },
+  ]
+
+  const schoolAdminActionNotes = [
+    {
+      title: "Attendance follow-up",
+      value:
+        stats.attendance > 0
+          ? `${stats.attendance} attendance records in the system`
+          : "No attendance records yet",
+      bg: "bg-amber-50",
+      text: "text-amber-800",
+      sub: "Check for missing entries and absent students.",
+    },
+    {
+      title: "Academic review",
+      value:
+        stats.results > 0
+          ? `${stats.results} result records available`
+          : "No results uploaded yet",
+      bg: "bg-emerald-50",
+      text: "text-emerald-800",
+      sub: "Monitor performance trends and pending uploads.",
+    },
+    {
+      title: "School capacity",
+      value:
+        stats.students > 0
+          ? `${stats.students} students across ${stats.classes} classes`
+          : "No students/classes yet",
+      bg: "bg-purple-50",
+      text: "text-purple-800",
+      sub: "Keep class allocation and staffing balanced.",
+    },
+  ]
+
+  const schoolAdminTopInsights = insights.slice(0, 3)
+
+  const teacherQuickActions: QuickActionItem[] = [
+    {
+      title: "Mark Attendance",
+      description: "Record daily classroom attendance and follow up quickly.",
+      href: "/dashboard/attendance",
+    },
+    {
+      title: "Upload Results",
+      description: "Enter and review student scores for your subjects.",
+      href: "/dashboard/results",
+    },
+    {
+      title: "View Students",
+      description: "Access student records and track classroom performance.",
+      href: "/dashboard/students",
+    },
+    {
+      title: "View Classes",
+      description: "See your classes and monitor class-level activity.",
+      href: "/dashboard/classes",
+    },
+  ]
+
+  const teacherFocusCards = [
+    {
+      title: "Attendance Reminder",
+      value:
+        stats.attendance > 0
+          ? `${stats.attendance} attendance records submitted`
+          : "No attendance records yet",
+      bg: "bg-amber-50",
+      text: "text-amber-800",
+      sub: "Ensure all classes are marked before the day ends.",
+    },
+    {
+      title: "Result Progress",
+      value:
+        stats.results > 0
+          ? `${stats.results} result records entered`
+          : "No results uploaded yet",
+      bg: "bg-emerald-50",
+      text: "text-emerald-800",
+      sub: "Keep score uploads current for timely review.",
+    },
+    {
+      title: "Class Coverage",
+      value:
+        stats.classes > 0
+          ? `${stats.classes} active classes, ${stats.students} students`
+          : "No assigned classes yet",
+      bg: "bg-indigo-50",
+      text: "text-indigo-800",
+      sub: "Track participation and classroom performance trends.",
+    },
+  ]
+
+  const teacherTopInsights =
+    insights.length > 0
+      ? insights.slice(0, 3)
+      : [
+          "Mark attendance early so absent students can be flagged quickly.",
+          "Upload results regularly to keep academic progress up to date.",
+          "Review class performance trends to identify struggling students.",
+        ]
 
   if (loading) {
     return (
-      <div className="bg-white p-6 rounded-xl shadow border">
-        <p>Loading dashboard...</p>
-      </div>
-    )
-  }
-
-  if (!stats) {
-    return (
-      <div className="bg-white p-6 rounded-xl shadow border">
-        <p>Failed to load dashboard.</p>
-      </div>
+      <RoleGuard
+        allowedRoles={["SUPER_ADMIN", "SCHOOL_ADMIN", "TEACHER", "PARENT"]}
+      >
+        <div className="p-6">Loading dashboard...</div>
+      </RoleGuard>
     )
   }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold">Dashboard Overview</h1>
-        <p className="text-gray-500">
-          Quick summary of attendance and student activity
-        </p>
-      </div>
-
-      <div className="grid md:grid-cols-4 gap-6">
-        <div className="bg-white shadow rounded-xl p-6 border">
-          <p className="text-gray-500">Total Students</p>
-          <h2 className="text-3xl font-bold">{stats.totalStudents}</h2>
-        </div>
-
-        <div className="bg-green-100 shadow rounded-xl p-6 border">
-          <p className="text-gray-700">Present Today</p>
-          <h2 className="text-3xl font-bold">{stats.presentToday}</h2>
-        </div>
-
-        <div className="bg-red-100 shadow rounded-xl p-6 border">
-          <p className="text-gray-700">Absent Today</p>
-          <h2 className="text-3xl font-bold">{stats.absentToday}</h2>
-        </div>
-
-        <div className="bg-yellow-100 shadow rounded-xl p-6 border">
-          <p className="text-gray-700">Late Today</p>
-          <h2 className="text-3xl font-bold">{stats.lateToday}</h2>
-        </div>
-      </div>
-
-      <div className="grid md:grid-cols-4 gap-6">
-        <Link
-          href="/dashboard/students"
-          className="bg-white p-6 rounded-xl shadow border hover:shadow-md transition"
+    <RoleGuard
+      allowedRoles={["SUPER_ADMIN", "SCHOOL_ADMIN", "TEACHER", "PARENT"]}
+    >
+      <div className="space-y-6">
+        <section
+          className={`rounded-2xl border p-6 shadow-sm ${
+            user?.role === "SCHOOL_ADMIN"
+              ? "border-blue-100 bg-gradient-to-r from-blue-700 to-blue-500 text-white"
+              : user?.role === "TEACHER"
+              ? "border-indigo-100 bg-gradient-to-r from-indigo-700 to-indigo-500 text-white"
+              : "bg-white"
+          }`}
         >
-          <h3 className="text-lg font-bold mb-2">Students</h3>
-          <p className="text-gray-500">Manage student records and profiles</p>
-        </Link>
+          <h1
+            className={`text-3xl font-bold ${
+              user?.role === "SCHOOL_ADMIN" || user?.role === "TEACHER"
+                ? "text-white"
+                : "text-gray-900"
+            }`}
+          >
+            Welcome{user?.name ? `, ${user.name}` : ""}
+          </h1>
 
-        <Link
-          href="/dashboard/attendance"
-          className="bg-white p-6 rounded-xl shadow border hover:shadow-md transition"
-        >
-          <h3 className="text-lg font-bold mb-2">Attendance</h3>
-          <p className="text-gray-500">Mark and review daily attendance</p>
-        </Link>
+          <p
+            className={`mt-2 ${
+              user?.role === "SCHOOL_ADMIN"
+                ? "text-blue-100"
+                : user?.role === "TEACHER"
+                ? "text-indigo-100"
+                : "text-gray-600"
+            }`}
+          >
+            {user?.role === "SUPER_ADMIN" &&
+              "Monitor schools and platform activity from one place."}
+            {user?.role === "SCHOOL_ADMIN" &&
+              "Manage students, teachers, classes, attendance, results, and daily school operations from one central dashboard."}
+            {user?.role === "TEACHER" &&
+              "Manage your classes, mark attendance, upload results, and follow classroom performance from one workspace."}
+            {user?.role === "PARENT" &&
+              "Follow your child’s academic progress and attendance."}
+          </p>
 
-        <Link
-          href="/dashboard/classes"
-          className="bg-white p-6 rounded-xl shadow border hover:shadow-md transition"
-        >
-          <h3 className="text-lg font-bold mb-2">Classes</h3>
-          <p className="text-gray-500">Create and organize school classes</p>
-        </Link>
+          {user?.role === "SCHOOL_ADMIN" && (
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link
+                href="/dashboard/students"
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
+              >
+                Manage Students
+              </Link>
+              <Link
+                href="/dashboard/teachers"
+                className="rounded-xl border border-white/30 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                Manage Teachers
+              </Link>
+              <Link
+                href="/dashboard/results"
+                className="rounded-xl border border-white/30 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                Review Results
+              </Link>
+            </div>
+          )}
 
-        <Link
-          href="/dashboard/schools"
-          className="bg-white p-6 rounded-xl shadow border hover:shadow-md transition"
-        >
-          <h3 className="text-lg font-bold mb-2">Schools</h3>
-          <p className="text-gray-500">Manage school branches and details</p>
-        </Link>
-      </div>
+          {user?.role === "TEACHER" && (
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link
+                href="/dashboard/attendance"
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50"
+              >
+                Mark Attendance
+              </Link>
+              <Link
+                href="/dashboard/results"
+                className="rounded-xl border border-white/30 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                Upload Results
+              </Link>
+              <Link
+                href="/dashboard/classes"
+                className="rounded-xl border border-white/30 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                View Classes
+              </Link>
+            </div>
+          )}
 
-      <div className="bg-white p-6 rounded-xl shadow border">
-        <h2 className="text-xl font-bold mb-4">Weekly Attendance</h2>
+          {error && (
+            <p
+              className={`mt-3 ${
+                user?.role === "SCHOOL_ADMIN" || user?.role === "TEACHER"
+                  ? "text-red-100"
+                  : "text-red-600"
+              }`}
+            >
+              {error}
+            </p>
+          )}
+        </section>
 
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={weekData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="date" />
-            <YAxis allowDecimals={false} />
-            <Tooltip />
-            <Bar dataKey="present" fill="#22c55e" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+        <section className="rounded-2xl border bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
+            <div className="flex-1">
+              <label className="mb-2 block text-sm font-medium text-gray-700">
+                Class
+              </label>
+              <select
+                value={selectedClass}
+                onChange={(e) => setSelectedClass(e.target.value)}
+                className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-blue-500"
+              >
+                <option value="">All Classes</option>
+                {availableClasses.map((className) => (
+                  <option key={className} value={className}>
+                    {className}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-      <div className="bg-white p-6 rounded-xl shadow border">
-        <h2 className="text-xl font-bold mb-4">Recent Students</h2>
+            <div className="flex-1">
+              <label className="mb-2 block text-sm font-medium text-gray-700">
+                Term
+              </label>
+              <select
+                value={selectedTerm}
+                onChange={(e) => setSelectedTerm(e.target.value)}
+                className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-blue-500"
+              >
+                <option value="">All Terms</option>
+                <option value="1">1st Term</option>
+                <option value="2">2nd Term</option>
+                <option value="3">3rd Term</option>
+              </select>
+            </div>
 
-        {recentStudents.length === 0 ? (
-          <p>No students found.</p>
-        ) : (
-          <table className="w-full border">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="border p-2 text-left">Name</th>
-                <th className="border p-2 text-left">Student ID</th>
-                <th className="border p-2 text-left">School</th>
-                <th className="border p-2 text-left">Class</th>
-              </tr>
-            </thead>
+            <div className="flex-1">
+              <label className="mb-2 block text-sm font-medium text-gray-700">
+                Start Date
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-blue-500"
+              />
+            </div>
 
-            <tbody>
-              {recentStudents.map((student) => (
-                <tr key={student.id}>
-                  <td className="border p-2">{student.name}</td>
-                  <td className="border p-2">{student.studentId}</td>
-                  <td className="border p-2">{student.school?.name || "-"}</td>
-                  <td className="border p-2">{student.classItem?.name || "-"}</td>
-                </tr>
+            <div className="flex-1">
+              <label className="mb-2 block text-sm font-medium text-gray-700">
+                End Date
+              </label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div>
+              <button
+                onClick={() => {
+                  setSelectedClass("")
+                  setSelectedTerm("")
+                  setStartDate("")
+                  setEndDate("")
+                }}
+                className="rounded-xl bg-gray-900 px-5 py-3 text-white"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {insights.length > 0 && (
+          <section className="rounded-2xl border bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold text-gray-900">Insights</h3>
+
+            <div className="mt-4 space-y-3">
+              {insights.map((insight, index) => (
+                <div
+                  key={index}
+                  className="rounded-xl bg-blue-50 p-4 text-sm text-gray-700"
+                >
+                  {insight}
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+          </section>
+        )}
+
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {cards.map((card) => (
+            <Link
+              key={card.title}
+              href={card.href}
+              className="rounded-2xl border bg-white p-5 shadow-sm transition hover:shadow-md"
+            >
+              <p className="text-sm font-medium text-gray-500">{card.title}</p>
+              <h2 className="mt-3 text-3xl font-bold text-gray-900">
+                {card.value}
+              </h2>
+              <p className="mt-3 text-sm text-blue-600">Open</p>
+            </Link>
+          ))}
+        </section>
+
+        {user?.role === "SCHOOL_ADMIN" && (
+          <>
+            <section className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+              {schoolAdminActionNotes.map((item) => (
+                <div
+                  key={item.title}
+                  className={`rounded-2xl p-5 shadow-sm ${item.bg}`}
+                >
+                  <p className={`text-sm font-semibold ${item.text}`}>
+                    {item.title}
+                  </p>
+                  <h3 className={`mt-3 text-xl font-bold ${item.text}`}>
+                    {item.value}
+                  </h3>
+                  <p className={`mt-2 text-sm ${item.text} opacity-80`}>
+                    {item.sub}
+                  </p>
+                </div>
+              ))}
+            </section>
+
+            <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+              <div className="rounded-2xl border bg-white p-6 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-semibold text-gray-900">
+                      Admin Quick Actions
+                    </h3>
+                    <p className="mt-1 text-sm text-gray-500">
+                      Jump straight into your most important school tasks.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {schoolAdminQuickActions.map((action) => (
+                    <Link
+                      key={action.href}
+                      href={action.href}
+                      className="rounded-2xl border border-gray-100 bg-gray-50 p-4 transition hover:border-blue-200 hover:bg-blue-50"
+                    >
+                      <h4 className="font-semibold text-gray-900">
+                        {action.title}
+                      </h4>
+                      <p className="mt-2 text-sm text-gray-600">
+                        {action.description}
+                      </p>
+                      <p className="mt-3 text-sm font-semibold text-blue-600">
+                        Open
+                      </p>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border bg-white p-6 shadow-sm">
+                <h3 className="text-xl font-semibold text-gray-900">
+                  School Admin Focus
+                </h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  Priority observations from your current data.
+                </p>
+
+                <div className="mt-5 space-y-3">
+                  {schoolAdminTopInsights.length > 0 ? (
+                    schoolAdminTopInsights.map((insight, index) => (
+                      <div
+                        key={index}
+                        className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-gray-700"
+                      >
+                        {insight}
+                      </div>
+                    ))
+                  ) : (
+                    <>
+                      <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm text-gray-700">
+                        Monitor daily attendance submissions and follow up on
+                        absent students quickly.
+                      </div>
+                      <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm text-gray-700">
+                        Review result uploads regularly so parents and teachers
+                        stay aligned.
+                      </div>
+                      <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm text-gray-700">
+                        Keep class distribution balanced as enrollment grows.
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </section>
+          </>
+        )}
+
+        {user?.role === "TEACHER" && (
+          <>
+            <section className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+              {teacherFocusCards.map((item) => (
+                <div
+                  key={item.title}
+                  className={`rounded-2xl p-5 shadow-sm ${item.bg}`}
+                >
+                  <p className={`text-sm font-semibold ${item.text}`}>
+                    {item.title}
+                  </p>
+                  <h3 className={`mt-3 text-xl font-bold ${item.text}`}>
+                    {item.value}
+                  </h3>
+                  <p className={`mt-2 text-sm ${item.text} opacity-80`}>
+                    {item.sub}
+                  </p>
+                </div>
+              ))}
+            </section>
+
+            <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+              <div className="rounded-2xl border bg-white p-6 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-semibold text-gray-900">
+                      Teacher Quick Actions
+                    </h3>
+                    <p className="mt-1 text-sm text-gray-500">
+                      Keep classroom tasks moving smoothly throughout the day.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {teacherQuickActions.map((action) => (
+                    <Link
+                      key={action.href}
+                      href={action.href}
+                      className="rounded-2xl border border-gray-100 bg-gray-50 p-4 transition hover:border-indigo-200 hover:bg-indigo-50"
+                    >
+                      <h4 className="font-semibold text-gray-900">
+                        {action.title}
+                      </h4>
+                      <p className="mt-2 text-sm text-gray-600">
+                        {action.description}
+                      </p>
+                      <p className="mt-3 text-sm font-semibold text-indigo-600">
+                        Open
+                      </p>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border bg-white p-6 shadow-sm">
+                <h3 className="text-xl font-semibold text-gray-900">
+                  Teaching Focus
+                </h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  Key reminders and observations for your classroom workflow.
+                </p>
+
+                <div className="mt-5 space-y-3">
+                  {teacherTopInsights.map((insight, index) => (
+                    <div
+                      key={index}
+                      className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 text-sm text-gray-700"
+                    >
+                      {insight}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+          </>
+        )}
+
+        <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <div className="rounded-2xl border bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold text-gray-900">
+              Attendance Trend
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Daily attendance status from real records
+            </p>
+            <div className="mt-6 h-80 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={attendanceTrend}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="present" fill="#16a34a" radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="absent" fill="#ef4444" radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="late" fill="#f59e0b" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold text-gray-900">
+              Performance Trend
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Monthly average score from real result records
+            </p>
+            <div className="mt-6 h-80 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={performanceTrend}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis domain={[0, 100]} />
+                  <Tooltip />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="averageScore"
+                    stroke="#2563eb"
+                    strokeWidth={3}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </section>
+
+        <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <div className="rounded-2xl border bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold text-gray-900">
+              Class Distribution
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Student population by class
+            </p>
+            <div className="mt-6 h-80 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={classDistribution}
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={110}
+                    dataKey="value"
+                    nameKey="name"
+                    label
+                  >
+                    {classDistribution.map((entry, index) => (
+                      <Cell
+                        key={`cell-${entry.name}-${index}`}
+                        fill={CHART_COLORS[index % CHART_COLORS.length]}
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold text-gray-900">
+              Quick Summary
+            </h3>
+            <div className="mt-4 space-y-4">
+              <div className="rounded-xl bg-blue-50 p-4">
+                <p className="text-sm text-gray-600">Schools</p>
+                <h4 className="text-xl font-bold text-blue-700">
+                  {stats.schools}
+                </h4>
+              </div>
+              <div className="rounded-xl bg-green-50 p-4">
+                <p className="text-sm text-gray-600">Students</p>
+                <h4 className="text-xl font-bold text-green-700">
+                  {stats.students}
+                </h4>
+              </div>
+              <div className="rounded-xl bg-yellow-50 p-4">
+                <p className="text-sm text-gray-600">Results</p>
+                <h4 className="text-xl font-bold text-yellow-700">
+                  {stats.results}
+                </h4>
+              </div>
+              <div className="rounded-xl bg-purple-50 p-4">
+                <p className="text-sm text-gray-600">Attendance</p>
+                <h4 className="text-xl font-bold text-purple-700">
+                  {stats.attendance}
+                </h4>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <div className="rounded-2xl border bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold text-gray-900">
+              Subject Performance
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Average score by subject
+            </p>
+            <div className="mt-6 h-80 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={performanceBySubject}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="subject" />
+                  <YAxis domain={[0, 100]} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar
+                    dataKey="averageScore"
+                    fill="#8b5cf6"
+                    radius={[8, 8, 0, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold text-gray-900">
+              Chart Notes
+            </h3>
+            <div className="mt-4 space-y-4 text-sm text-gray-600">
+              <div className="rounded-xl bg-slate-50 p-4">
+                Attendance chart now uses real attendance records.
+              </div>
+              <div className="rounded-xl bg-slate-50 p-4">
+                Performance trend now uses monthly average result scores.
+              </div>
+              <div className="rounded-xl bg-slate-50 p-4">
+                Class distribution now uses real student counts by class.
+              </div>
+              <div className="rounded-xl bg-slate-50 p-4">
+                Subject performance now uses real average score by subject.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {user?.role === "SUPER_ADMIN" && (
+          <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border bg-white p-6 shadow-sm">
+              <h3 className="text-xl font-semibold text-gray-900">
+                Platform Overview
+              </h3>
+              <div className="mt-4 space-y-3 text-sm text-gray-600">
+                <div className="flex justify-between border-b pb-2">
+                  <span>Schools</span>
+                  <span className="font-semibold text-gray-900">
+                    {stats.schools}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-2">
+                  <span>Students</span>
+                  <span className="font-semibold text-gray-900">
+                    {stats.students}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-2">
+                  <span>Teachers</span>
+                  <span className="font-semibold text-gray-900">
+                    {stats.teachers}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Classes</span>
+                  <span className="font-semibold text-gray-900">
+                    {stats.classes}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-6 shadow-sm">
+              <h3 className="text-xl font-semibold text-gray-900">
+                Quick Actions
+              </h3>
+              <div className="mt-4 flex flex-col gap-3">
+                <Link
+                  href="/dashboard/schools"
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-white"
+                >
+                  Manage Schools
+                </Link>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {user?.role === "SCHOOL_ADMIN" && (
+          <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border bg-white p-6 shadow-sm">
+              <h3 className="text-xl font-semibold text-gray-900">
+                School Overview
+              </h3>
+              <div className="mt-4 space-y-3 text-sm text-gray-600">
+                <div className="flex justify-between border-b pb-2">
+                  <span>Students</span>
+                  <span className="font-semibold text-gray-900">
+                    {stats.students}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-2">
+                  <span>Teachers</span>
+                  <span className="font-semibold text-gray-900">
+                    {stats.teachers}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-2">
+                  <span>Classes</span>
+                  <span className="font-semibold text-gray-900">
+                    {stats.classes}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Total Results</span>
+                  <span className="font-semibold text-gray-900">
+                    {stats.results}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-6 shadow-sm">
+              <h3 className="text-xl font-semibold text-gray-900">
+                Quick Actions
+              </h3>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Link
+                  href="/dashboard/students"
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-white"
+                >
+                  Manage Students
+                </Link>
+                <Link
+                  href="/dashboard/teachers"
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-white"
+                >
+                  Manage Teachers
+                </Link>
+                <Link
+                  href="/dashboard/classes"
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-white"
+                >
+                  Manage Classes
+                </Link>
+                <Link
+                  href="/dashboard/results"
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-white"
+                >
+                  View Results
+                </Link>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {user?.role === "PARENT" && (
+          <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border bg-white p-6 shadow-sm">
+              <h3 className="text-xl font-semibold text-gray-900">
+                Child Summary
+              </h3>
+              <div className="mt-4 space-y-3 text-sm text-gray-600">
+                <div className="flex justify-between border-b pb-2">
+                  <span>Name</span>
+                  <span className="font-semibold text-gray-900">
+                    {childSummary.studentName || "-"}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-2">
+                  <span>Class</span>
+                  <span className="font-semibold text-gray-900">
+                    {childSummary.className || "-"}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-2">
+                  <span>Average Score</span>
+                  <span className="font-semibold text-gray-900">
+                    {childSummary.averageScore ?? "-"}
+                    {childSummary.averageScore !== null &&
+                    childSummary.averageScore !== undefined
+                      ? "%"
+                      : ""}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Attendance Rate</span>
+                  <span className="font-semibold text-gray-900">
+                    {childSummary.attendanceRate ?? "-"}
+                    {childSummary.attendanceRate !== null &&
+                    childSummary.attendanceRate !== undefined
+                      ? "%"
+                      : ""}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-6 shadow-sm">
+              <h3 className="text-xl font-semibold text-gray-900">
+                Quick Actions
+              </h3>
+              <div className="mt-4 flex flex-col gap-3">
+                <Link
+                  href="/dashboard/results"
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-white"
+                >
+                  View My Child
+                </Link>
+                <Link
+                  href="/dashboard/results"
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-white"
+                >
+                  View Results
+                </Link>
+              </div>
+            </div>
+          </section>
         )}
       </div>
-    </div>
+    </RoleGuard>
   )
 }

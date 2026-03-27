@@ -42,11 +42,27 @@ export default function LoginPage() {
         return
       }
 
-      saveAuth(data.token, data.user || null)
+      if (!data.user || !data.user.role) {
+        alert("Login succeeded but user role was not returned")
+        return
+      }
+
+      saveAuth(data.token, data.user)
 
       console.log("TOKEN SAVED:", localStorage.getItem("token"))
+      console.log("USER SAVED:", localStorage.getItem("user"))
 
-      router.push("/dashboard")
+      if (data.user.role === "SUPER_ADMIN") {
+        router.push("/dashboard/super-admin")
+      } else if (data.user.role === "SCHOOL_ADMIN") {
+        router.push("/dashboard/admin")
+      } else if (data.user.role === "TEACHER") {
+        router.push("/dashboard/teacher")
+      } else if (data.user.role === "PARENT") {
+        router.push("/dashboard/parent")
+      } else {
+        router.push("/dashboard")
+      }
     } catch (error: any) {
       console.error("LOGIN ERROR:", error)
       alert(error.message || "Something went wrong")
